@@ -1,64 +1,91 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-# === 配置区 (不变) ===
-CHIPS=(0 1)
-CHANNEL=0
-PERIOD_NS=1000000
-STEP_NS=50000
-SLEEP_SEC=0.05
+import time
+import signal
+import sys
+from periphery import PWM
 
-# === 导出并初始化 PWM 通道 ===
-for chip in "${CHIPS[@]}"; do
-  PWM_ROOT="/sys/class/pwm/pwmchip${chip}"
+# ==================== 配置区 (为你的设备全新配置) ====================
+# 使用与 sh 脚本完全相同的参数
+PWM_CHIP_PAN     = 0
+PWM_CHANNEL_PAN  = 0
+PWM_CHIP_TILT    = 1
+PWM_CHANNEL_TILT = 0
 
-  # 导出 (如果不存在)
-  if [ ! -d "${PWM_ROOT}/pwm${CHANNEL}" ]; then
-    echo "${CHANNEL}" | sudo tee "${PWM_ROOT}/export" >/dev/null
-    sleep 0.1
-  fi
+# 频率和周期，模仿 sh 脚本
+SERVO_FREQ     = 1000.0  # 1000 Hz
+PERIOD_NS      = 1000000 # 1,000,000 ns = 1ms
 
-  PWM_CH_DIR="${PWM_ROOT}/pwm${CHANNEL}"
+# 扫描步长和延时
+STEP_NS        = 50000   # 50,000 ns
+SLEEP_SEC      = 0.05
+# =================================================================
 
-  # --- 【核心修复】正确的初始化顺序 ---
-  # 1. 必须先确保通道处于 disable 状态
-  echo "0" | sudo tee "${PWM_CH_DIR}/enable" >/dev/null
+pan_pwm = None
+tilt_pwm = None
 
-  # 2. 必须先将 duty_cycle 置零，以防它大于即将设置的 period
-  echo "0" | sudo tee "${PWM_CH_DIR}/duty_cycle" >/dev/null
+def set_raw_duty_cycle(pwm: PWM, duty_ns: int):
+    """
+    直接设置一个以纳秒为单位的原始 duty_cycle 值。
+    """
+    # 占空比比例 = 想要的duty_cycle(ns) / 总周期(ns)
+    duty_cycle_ratio = duty_ns / PERIOD_NS
+    pwm.duty_cycle = duty_cycle_ratio
 
-  # 3. 现在可以安全地设置任何 period 值
-  echo "${PERIOD_NS}" | sudo tee "${PWM_CH_DIR}/period" >/dev/null
+def cleanup(signum=None, frame=None):
+    """清理函数"""
+    print("\n程序中断，正在关闭PWM...")
+    for pwm in (pan_pwm, tilt_pwm):
+        if pwm:
+            try:
+                # 停止时将占空比置零
+                pwm.duty_cycle = 0.0
+                pwm.disable()
+                pwm.close()
+            except Exception:
+                pass
+    print("清理完成，程序退出。")
+    sys.exit(0)
 
-  # 4. 最后，使能 PWM
-  echo "1" | sudo tee "${PWM_CH_DIR}/enable" >/dev/null
-done
+def main():
+    """主程序：模仿 sh 脚本的扫描逻辑"""
+    global pan_pwm, tilt_pwm
 
-# === 循环扫描占空比 (不变) ===
-while true; do
-  # 上升阶段
-  for dc in $(seq 0 "${STEP_NS}" "${PERIOD_NS}"); do
-    sudo tee "/sys/class/pwm/pwmchip0/pwm${CHANNEL}/duty_cycle" <<< "${dc}" >/dev/null
-    sudo tee "/sys/class/pwm/pwmchip1/pwm${CHANNEL}/duty_cycle" <<< "$(( PERIOD_NS - dc ))" >/dev/null
-    sleep "${SLEEP_SEC}"
-  done
-  # 下降阶段
-  for dc in $(seq "${PERIOD_NS}" -${STEP_NS} 0); do
-    sudo tee "/sys/class/pwm/pwmchip0/pwm${CHANNEL}/duty_cycle" <<< "${dc}" >/dev/null
-    sudo tee "/sys/class/pwm/pwmchip1/pwm${CHANNEL}/duty_cycle" <<< "$(( PERIOD_NS - dc ))" >/dev/null
-    sleep "${SLEEP_SEC}"
-  done
-done
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
 
-# === 清理（按 Ctrl+C 停止后执行）(不变) ===
-cleanup() {
-  for chip in "${CHIPS[@]}"; do
-    PWM_ROOT="/sys/class/pwm/pwmchip${chip}"
-    PWM_CH_DIR="${PWM_ROOT}/pwm${CHANNEL}"
-    # 在 unexport 之前先 disable 是一个好习惯
-    echo "0" | sudo tee "${PWM_CH_DIR}/enable" >/dev/null
-    echo "${CHANNEL}" | sudo tee "${PWM_ROOT}/unexport" >/dev/null
-  done
-  echo "PWM 已全部关闭并撤销导出。"
-}
-trap cleanup EXIT
+    try:
+        # 初始化两个PWM通道
+        pan_pwm = PWM(PWM_CHIP_PAN, PWM_CHANNEL_PAN)
+        tilt_pwm = PWM(PWM_CHIP_TILT, PWM_CHANNEL_TILT)
+
+        for pwm in (pan_pwm, tilt_pwm):
+            pwm.frequency = SERVO_FREQ
+            pwm.duty_cycle = 0.0 # 初始占空比为0
+            pwm.enable()
+
+        print("PWM 已初始化，频率: 1000 Hz。开始扫描占空比...")
+        print("这个脚本会让两个舵机反向转动。按 Ctrl+C 停止。")
+
+        # 无限循环扫描占空比，完全模仿 sh 脚本
+        while True:
+            # 从 0 -> 100%
+            for dc_ns in range(0, PERIOD_NS + 1, STEP_NS):
+                set_raw_duty_cycle(pan_pwm, dc_ns)
+                set_raw_duty_cycle(tilt_pwm, PERIOD_NS - dc_ns)
+                time.sleep(SLEEP_SEC)
+
+            # 从 100% -> 0
+            for dc_ns in range(PERIOD_NS, -1, -STEP_NS):
+                set_raw_duty_cycle(pan_pwm, dc_ns)
+                set_raw_duty_cycle(tilt_pwm, PERIOD_NS - dc_ns)
+                time.sleep(SLEEP_SEC)
+
+    except Exception as e:
+        print(f"\n程序主循环发生严重错误: {e}")
+    finally:
+        cleanup()
+
+if __name__ == "__main__":
+    main()
