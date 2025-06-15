@@ -16,8 +16,14 @@ for chip in "${CHIPS[@]}"; do
     echo "${CHANNEL}" | sudo tee "${PWM_ROOT}/export" >/dev/null
     sleep 0.1
   fi
-  # 配置周期与初始占空比
+
   PWM_CH_DIR="${PWM_ROOT}/pwm${CHANNEL}"
+
+  # === 【关键修复】 ===
+  # 在设置 period 之前，确保 pwm 是 disable 状态，防止 "Invalid argument" 错误
+  echo "0" | sudo tee "${PWM_CH_DIR}/enable" >/dev/null
+
+  # 配置周期与初始占空比
   echo "${PERIOD_NS}"   | sudo tee "${PWM_CH_DIR}/period"     >/dev/null
   echo       "0"        | sudo tee "${PWM_CH_DIR}/duty_cycle" >/dev/null
   echo       "1"        | sudo tee "${PWM_CH_DIR}/enable"     >/dev/null
