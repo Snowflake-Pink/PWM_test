@@ -1,17 +1,18 @@
 #!/bin/bash
 set -e
 
-# === 配置区 ===
-CHIPS=(0 1)             # 要测试的 pwmchip 列表
-CHANNEL=0               # 每个 pwmchip 上的通道号
-PERIOD_NS=1000000       # 周期：1_000_000 ns = 1 ms
-STEP_NS=50000           # 占空比步长：50_000 ns = 5%
-SLEEP_SEC=0.05          # 每步延时：0.05 s
+# === 配置区 (不变) ===
+CHIPS=(0 1)
+CHANNEL=0
+PERIOD_NS=1000000
+STEP_NS=50000
+SLEEP_SEC=0.05
 
 # === 导出并初始化 PWM 通道 ===
 for chip in "${CHIPS[@]}"; do
   PWM_ROOT="/sys/class/pwm/pwmchip${chip}"
-  # 导出
+
+  # 导出 (如果不存在)
   if [ ! -d "${PWM_ROOT}/pwm${CHANNEL}" ]; then
     echo "${CHANNEL}" | sudo tee "${PWM_ROOT}/export" >/dev/null
     sleep 0.1
@@ -19,18 +20,21 @@ for chip in "${CHIPS[@]}"; do
 
   PWM_CH_DIR="${PWM_ROOT}/pwm${CHANNEL}"
 
-  # === 【关键修复】 ===
-  # 在设置 period 之前，确保 pwm 是 disable 状态，防止 "Invalid argument" 错误
+  # --- 【核心修复】正确的初始化顺序 ---
+  # 1. 必须先确保通道处于 disable 状态
   echo "0" | sudo tee "${PWM_CH_DIR}/enable" >/dev/null
 
-  # 配置周期与初始占空比
-  echo "${PERIOD_NS}"   | sudo tee "${PWM_CH_DIR}/period"     >/dev/null
-  echo       "0"        | sudo tee "${PWM_CH_DIR}/duty_cycle" >/dev/null
-  echo       "1"        | sudo tee "${PWM_CH_DIR}/enable"     >/dev/null
+  # 2. 必须先将 duty_cycle 置零，以防它大于即将设置的 period
+  echo "0" | sudo tee "${PWM_CH_DIR}/duty_cycle" >/dev/null
+
+  # 3. 现在可以安全地设置任何 period 值
+  echo "${PERIOD_NS}" | sudo tee "${PWM_CH_DIR}/period" >/dev/null
+
+  # 4. 最后，使能 PWM
+  echo "1" | sudo tee "${PWM_CH_DIR}/enable" >/dev/null
 done
 
-# === 循环扫描占空比 ===
-# 从 0 → 100% → 0%
+# === 循环扫描占空比 (不变) ===
 while true; do
   # 上升阶段
   for dc in $(seq 0 "${STEP_NS}" "${PERIOD_NS}"); do
@@ -46,11 +50,12 @@ while true; do
   done
 done
 
-# === 清理（按 Ctrl+C 停止后执行） ===
+# === 清理（按 Ctrl+C 停止后执行）(不变) ===
 cleanup() {
   for chip in "${CHIPS[@]}"; do
     PWM_ROOT="/sys/class/pwm/pwmchip${chip}"
     PWM_CH_DIR="${PWM_ROOT}/pwm${CHANNEL}"
+    # 在 unexport 之前先 disable 是一个好习惯
     echo "0" | sudo tee "${PWM_CH_DIR}/enable" >/dev/null
     echo "${CHANNEL}" | sudo tee "${PWM_ROOT}/unexport" >/dev/null
   done
