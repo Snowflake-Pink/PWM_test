@@ -1,59 +1,56 @@
 #!/usr/bin/env python3
-import time
-import signal
-import sys
+import time, signal, sys
 from periphery import PWM
 
-# ———— 参数区 ————
-# 把 path 改成芯片号 (integer)，否则 periphery 会报 “invalid chip type should be integer”
-PWM_CHIP_PAN     = 0   # /sys/class/pwm/pwmchip0
+# === 配置区 ===
+PWM_CHIP_PAN     = 0   # 对应 /sys/class/pwm/pwmchip0
 PWM_CHANNEL_PAN  = 0
 
-PWM_CHIP_TILT    = 1   # /sys/class/pwm/pwmchip1
+PWM_CHIP_TILT    = 1   # 对应 /sys/class/pwm/pwmchip1
 PWM_CHANNEL_TILT = 0
 
-SERVO_FREQ     = 50.0   # 50 Hz → 20 ms 周期
-MIN_PULSE_MS   = 0.5    # 0° 对应 0.5 ms
-MAX_PULSE_MS   = 2.5    # 180° 对应 2.5 ms
+SERVO_FREQ     = 50.0   # 50Hz → 20ms 周期
+MIN_PULSE_MS   = 1.0    # 0° 对应 1.0ms
+MAX_PULSE_MS   = 2.0    # 180° 对应 2.0ms
 
-SWEEP_STEP_DEG = 15     # 每次递增 15°
-SWEEP_DELAY_S  = 0.3    # 每次角度停留 0.3 s
-CENTER_DELAY_S = 1.0    # 回中位后停留 1 s
+SWEEP_STEP_DEG = 15     # 每次扫 15°
+SWEEP_DELAY_S  = 0.3    # 每步停 0.3s
+CENTER_DELAY_S = 1.0    # 回中位后停 1s
+# ===============
 
-# ———— 全局 PWM 实例 ————
-pan  = None
+pan = None
 tilt = None
 
 def set_angle(pwm: PWM, angle: float):
-    """
-    将 angle (0~180) 映射到 0.5~2.5ms 脉宽，并写入 pwm.duty_cycle (单位：秒)。
-    """
+    """把 0–180° 线性映射到 MIN_PULSE_MS–MAX_PULSE_MS，再写入 duty_cycle（秒）。"""
     a = max(0.0, min(180.0, angle))
     pulse_ms = MIN_PULSE_MS + (a / 180.0) * (MAX_PULSE_MS - MIN_PULSE_MS)
     pwm.duty_cycle = pulse_ms * 1e-3
 
 def cleanup(signum=None, frame=None):
-    """
-    Ctrl–C 或 SIGTERM 时调用：
-    1) 先把舵机回到 90° 中位
-    2) 停留一会儿
-    3) 再 disable & close
-    """
-    print("\nSignal received, moving to center and shutting down...")
+    """中断或结束时：先回中位，再 disable/close。"""
+    print("\nCleanup: moving servos to center then shutting down...")
     try:
         set_angle(pan,  90)
         set_angle(tilt, 90)
         time.sleep(CENTER_DELAY_S)
     except Exception:
         pass
+
     for pwm in (pan, tilt):
-        if pwm and pwm.is_enabled:
-            pwm.disable()
-            pwm.close()
+        if pwm:
+            try:
+                pwm.disable()
+            except Exception:
+                pass
+            try:
+                pwm.close()
+            except Exception:
+                pass
     sys.exit(0)
 
 if __name__ == "__main__":
-    # 捕获中断
+    # 捕获 Ctrl–C / SIGTERM
     signal.signal(signal.SIGINT,  cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
@@ -62,15 +59,15 @@ if __name__ == "__main__":
         pan = PWM(PWM_CHIP_PAN, PWM_CHANNEL_PAN)
         pan.frequency = SERVO_FREQ
         pan.enable()
-        print(f"Pan PWM (chip {PWM_CHIP_PAN}, channel {PWM_CHANNEL_PAN}) enabled.")
+        print(f"Pan PWM initialized: chip={PWM_CHIP_PAN}, channel={PWM_CHANNEL_PAN}")
 
         # 初始化 Tilt
         tilt = PWM(PWM_CHIP_TILT, PWM_CHANNEL_TILT)
         tilt.frequency = SERVO_FREQ
         tilt.enable()
-        print(f"Tilt PWM (chip {PWM_CHIP_TILT}, channel {PWM_CHANNEL_TILT}) enabled.")
+        print(f"Tilt PWM initialized: chip={PWM_CHIP_TILT}, channel={PWM_CHANNEL_TILT}")
 
-        # 首次回中位
+        # 回中位
         set_angle(pan,  90)
         set_angle(tilt, 90)
         time.sleep(CENTER_DELAY_S)
